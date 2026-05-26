@@ -283,3 +283,44 @@ TODO:
 - Expand rule modules for unconscious, bed fall, unauthorized exit, and violence detection.
 - Add RTSP benchmark tooling in `benchmark/benchmark_rtsp.py`.
 - Calibrate thresholds with real non-sensitive sample videos.
+
+## Event-Frame Action Recognition Pipeline
+
+The dataset JSON files contain event-level labels such as `annotations.event_class` and `annotations.event_frame`. They do not contain bbox ground truth, so this project does not convert them to YOLO txt labels or train YOLO from them.
+
+For this dataset, YOLO is used as a pretrained person detector only. The action pipeline is:
+
+```text
+RTSP/local mp4
+-> pretrained YOLO person bbox
+-> largest person crop sequence
+-> ActionClassifier
+-> event_frame evaluation
+-> bbox + event payload output/visualization
+```
+
+Run on a local mp4 and JSON label:
+
+```bash
+python -m ai.main --input path/to/video.mp4 --label path/to/label.json --detector-mode mock --max-frames 120
+```
+
+Run with pretrained YOLO person detector:
+
+```bash
+python -m ai.main --input path/to/video.mp4 --label path/to/label.json --detector-mode yolo --yolo-model yolov8n.pt
+```
+
+Save visualization:
+
+```bash
+python -m ai.main --input path/to/video.mp4 --label path/to/label.json --output-video outputs/annotated.mp4
+```
+
+Use a CSV containing `video_path,label_path,split`:
+
+```bash
+python -m ai.main --dataset-csv datasets/processed/clips_train.csv --split train --detector-mode mock
+```
+
+Current action classifier is a mock interface returning `Fight/Fall/Normal` style labels. Replace `MockActionClassifier` with a PyTorch video classification model later.
