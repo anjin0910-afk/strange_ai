@@ -1,0 +1,66 @@
+import os
+from dataclasses import dataclass
+
+
+def get_env_int(name, default):
+    value = os.getenv(name, str(default))
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got: {value}")
+
+
+def get_env_float(name, default):
+    value = os.getenv(name, str(default))
+    try:
+        return float(value)
+    except ValueError:
+        raise ValueError(f"{name} must be a number, got: {value}")
+
+
+def get_env_bool(name, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+@dataclass(frozen=True)
+class Settings:
+    rtsp_url: str
+    camera_id: str
+    detector_mode: str
+    yolo_model: str
+    yolo_device: str
+    frame_queue_size: int
+    reconnect_delay_seconds: float
+    mock_frame_interval_seconds: float
+    allow_mock_fallback: bool
+    mqtt_host: str
+    mqtt_port: int
+    mqtt_topic: str
+    mqtt_client_id: str
+    fall_min_duration_seconds: float
+    fall_debounce_seconds: float
+    max_frames: int
+
+
+def load_settings():
+    return Settings(
+        rtsp_url=os.getenv("RTSP_URL", "rtsp://localhost:8554/cam01"),
+        camera_id=os.getenv("CAMERA_ID", "cam_01"),
+        detector_mode=os.getenv("DETECTOR_MODE", "mock").strip().lower(),
+        yolo_model=os.getenv("YOLO_MODEL", "yolov8n-pose.pt"),
+        yolo_device=os.getenv("YOLO_DEVICE", "auto"),
+        frame_queue_size=get_env_int("FRAME_QUEUE_SIZE", 2),
+        reconnect_delay_seconds=get_env_float("RTSP_RECONNECT_DELAY_SECONDS", 3),
+        mock_frame_interval_seconds=get_env_float("MOCK_FRAME_INTERVAL_SECONDS", 0.2),
+        allow_mock_fallback=get_env_bool("ALLOW_MOCK_FALLBACK", True),
+        mqtt_host=os.getenv("MQTT_HOST", "localhost"),
+        mqtt_port=get_env_int("MQTT_PORT", 1883),
+        mqtt_topic=os.getenv("MQTT_TOPIC", "safety/events"),
+        mqtt_client_id=os.getenv("MQTT_CLIENT_ID", "edge-ai-001"),
+        fall_min_duration_seconds=get_env_float("FALL_MIN_DURATION_SECONDS", 1.5),
+        fall_debounce_seconds=get_env_float("FALL_DEBOUNCE_SECONDS", 10),
+        max_frames=get_env_int("MAX_FRAMES", 0),
+    )

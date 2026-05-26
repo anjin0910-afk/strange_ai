@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
 
+from messaging.event_schema import build_safety_event
+
 
 EVENT_TYPES = [
     "fall_detected",
@@ -37,14 +39,14 @@ def get_env_int(name, default):
 
 def build_event():
     event_type = random.choice(EVENT_TYPES)
-    return {
-        "type": event_type,
-        "camera_id": random.choice(CAMERA_IDS),
-        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "severity": random.choice(SEVERITIES),
-        "message": EVENT_MESSAGES[event_type],
-        "source": "edge-ai-mock",
-    }
+    return build_safety_event(
+        event_type=event_type,
+        camera_id=random.choice(CAMERA_IDS),
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        severity=random.choice(SEVERITIES),
+        message=EVENT_MESSAGES[event_type],
+        source="edge-ai-mock",
+    )
 
 
 def connect_mqtt(host, port, client_id):

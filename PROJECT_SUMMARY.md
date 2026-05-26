@@ -156,3 +156,130 @@ Expected event shape:
 - This mock does not implement YOLO, OpenCV, or RTSP processing.
 - It does not include real videos, personal data, API keys, or passwords.
 - It can be replaced later by the real edge AI inference pipeline while keeping the MQTT topic contract.
+
+## Edge AI Pipeline MVP
+
+`main.py` provides the initial runtime shape for the real CCTV Edge AI server.
+
+```text
+CCTV / Sample Video
+-> RTSP Stream
+-> OpenCV RTSP Reader
+-> Latest-frame Queue
+-> YOLO Pose Detector or Mock Detector
+-> Fall Rule Engine
+-> MQTT safety/events
+-> Spring Boot Backend
+```
+
+### Current Structure
+
+```text
+main.py
+config.py
+stream/frame_queue.py
+stream/rtsp_reader.py
+detector/mock_detector.py
+detector/yolo_pose_detector.py
+rules/fall_rule.py
+messaging/event_schema.py
+messaging/mqtt_publisher.py
+tests/test_fall_rule.py
+tests/test_event_schema.py
+```
+
+The frame queue is intentionally small and drops old frames so inference latency does not grow when processing is slower than the RTSP input.
+
+### Pipeline Environment
+
+```text
+RTSP_URL=rtsp://localhost:8554/cam01
+CAMERA_ID=cam_01
+DETECTOR_MODE=mock
+YOLO_MODEL=yolov8n-pose.pt
+YOLO_DEVICE=auto
+FRAME_QUEUE_SIZE=2
+ALLOW_MOCK_FALLBACK=true
+FALL_MIN_DURATION_SECONDS=1.5
+FALL_DEBOUNCE_SECONDS=10
+MAX_FRAMES=0
+MQTT_HOST=localhost
+MQTT_PORT=1883
+MQTT_TOPIC=safety/events
+MQTT_CLIENT_ID=edge-ai-001
+```
+
+### Run The Pipeline
+
+Mock detector mode, no RTSP required:
+
+```bash
+python main.py --dry-run --once
+```
+
+Publish to MQTT with mock detector:
+
+```bash
+python main.py --once
+```
+
+Run with RTSP and YOLO pose model:
+
+```bash
+DETECTOR_MODE=yolo RTSP_URL=rtsp://localhost:8554/cam01 YOLO_MODEL=yolov8n-pose.pt python main.py
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:DETECTOR_MODE="yolo"
+$env:RTSP_URL="rtsp://localhost:8554/cam01"
+$env:YOLO_MODEL="yolov8n-pose.pt"
+python main.py
+```
+
+### MQTT Verification
+
+Start Mosquitto in `strange_infra`, then subscribe:
+
+```bash
+mosquitto_sub -h localhost -p 1883 -t safety/events
+```
+
+Run the AI server:
+
+```bash
+python main.py --once
+```
+
+Expected event shape:
+
+```json
+{
+  "type": "fall_detected",
+  "camera_id": "cam_01",
+  "timestamp": "2026-05-26T10:00:00Z",
+  "severity": "HIGH",
+  "message": "쓰러짐 의심 상황이 감지되었습니다.",
+  "source": "edge-ai",
+  "track_id": 1,
+  "metadata": {
+    "bbox": [100, 150, 280, 390],
+    "confidence": 0.87,
+    "rule_score": 0.91,
+    "pose_state": "LYING",
+    "model_name": "yolov8n-pose"
+  }
+}
+```
+
+### Rule Engine Notes
+
+The first stabilized rule is `fall_detected`. It combines bbox aspect ratio, pose-horizontal signal, detector confidence, and a minimum duration threshold before emitting an event. Repeated events for the same track are debounced.
+
+TODO:
+
+- Add ByteTrack or another tracker for stable `track_id` across real streams.
+- Expand rule modules for unconscious, bed fall, unauthorized exit, and violence detection.
+- Add RTSP benchmark tooling in `benchmark/benchmark_rtsp.py`.
+- Calibrate thresholds with real non-sensitive sample videos.
