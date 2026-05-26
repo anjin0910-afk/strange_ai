@@ -5,8 +5,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-import redis
-from redis.exceptions import RedisError
+import paho.mqtt.client as mqtt
 
 
 EVENT_TYPES = [
@@ -44,21 +43,28 @@ def build_event():
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "severity": random.choice(SEVERITIES),
         "message": EVENT_MESSAGES[event_type],
+        "source": "edge-ai-mock",
     }
 
 
-def connect_redis(host, port):
-    client = redis.Redis(host=host, port=port, decode_responses=True)
-    client.ping()
+def connect_mqtt(host, port, client_id):
+    client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        client_id=client_id,
+        protocol=mqtt.MQTTv311,
+    )
+    client.connect(host, port, keepalive=60)
+    client.loop_start()
     return client
 
 
 def main():
-    host = os.getenv("REDIS_HOST", "localhost")
-    channel = os.getenv("REDIS_CHANNEL", "safety-events")
+    host = os.getenv("MQTT_HOST", "localhost")
+    topic = os.getenv("MQTT_TOPIC", "safety/events")
+    client_id = os.getenv("MQTT_CLIENT_ID", "edge-ai-mock-001")
 
     try:
-        port = get_env_int("REDIS_PORT", 6379)
+        port = get_env_int("MQTT_PORT", 1883)
         interval_seconds = get_env_int("PUBLISH_INTERVAL_SECONDS", 3)
     except ValueError as exc:
         print(f"[mock-edge-ai] Configuration error: {exc}", file=sys.stderr)
@@ -72,32 +78,41 @@ def main():
         return 1
 
     try:
-        redis_client = connect_redis(host, port)
-    except RedisError as exc:
+        mqtt_client = connect_mqtt(host, port, client_id)
+    except Exception as exc:
         print(
-            f"[mock-edge-ai] Redis connection failed: host={host}, port={port}, error={exc}",
+            f"[mock-edge-ai] MQTT connection failed: host={host}, port={port}, client_id={client_id}, error={exc}",
             file=sys.stderr,
         )
         return 1
 
     print(
-        f"[mock-edge-ai] Publishing mock safety events to Redis channel '{channel}' "
-        f"at redis://{host}:{port} every {interval_seconds}s"
+        f"[mock-edge-ai] Publishing mock safety events to MQTT topic '{topic}' "
+        f"at mqtt://{host}:{port} every {interval_seconds}s"
     )
 
     try:
         while True:
             event = build_event()
             payload = json.dumps(event, ensure_ascii=False)
-            redis_client.publish(channel, payload)
+            result = mqtt_client.publish(topic, payload, qos=0)
+            if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                print(
+                    f"[mock-edge-ai] MQTT publish failed: topic={topic}, rc={result.rc}",
+                    file=sys.stderr,
+                )
+                return 1
             print(f"[mock-edge-ai] published: {payload}", flush=True)
             time.sleep(interval_seconds)
     except KeyboardInterrupt:
         print("\n[mock-edge-ai] Stopped by user")
         return 0
-    except RedisError as exc:
-        print(f"[mock-edge-ai] Redis publish failed: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"[mock-edge-ai] MQTT publish failed: {exc}", file=sys.stderr)
         return 1
+    finally:
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
 
 
 if __name__ == "__main__":

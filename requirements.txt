@@ -5,4 +5,4 @@ pandas
 PyYAML
 tqdm
 tabulate
-redis
+paho-mqtt

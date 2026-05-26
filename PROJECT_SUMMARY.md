@@ -80,24 +80,25 @@ The optional fall candidate rule uses COCO pose shoulder and hip keypoints. A pe
 
 This is a simple screening rule for model comparison, not a final safety decision engine.
 
-## Mock Edge AI Redis Publisher
+## Mock Edge AI MQTT Publisher
 
-`mock_edge_ai.py` publishes random safety event JSON messages to the Redis Pub/Sub channel used by the local development pipeline.
+`mock_edge_ai.py` publishes random safety event JSON messages to the MQTT topic used by the local development pipeline.
 
 ```text
-Python Edge AI -> Redis Message Broker -> Spring Boot Backend -> React Frontend
+Python Edge AI -> MQTT Broker (Mosquitto) -> Spring Boot MQTT Subscriber -> WebSocket -> React Frontend
 ```
 
 This script is a mock publisher for integration testing before OpenCV, YOLOv8-Pose, and RTSP inference are connected.
 
-### Redis Environment
+### MQTT Environment
 
 Set these environment variables when you need values other than the defaults:
 
 ```text
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_CHANNEL=safety-events
+MQTT_HOST=localhost
+MQTT_PORT=1883
+MQTT_TOPIC=safety/events
+MQTT_CLIENT_ID=edge-ai-mock-001
 PUBLISH_INTERVAL_SECONDS=3
 ```
 
@@ -109,7 +110,7 @@ pip install -r requirements.txt
 
 ### Run
 
-Make sure Redis is running, then start the mock publisher:
+Make sure Mosquitto MQTT Broker is running, then start the mock publisher:
 
 ```bash
 python mock_edge_ai.py
@@ -118,23 +119,23 @@ python mock_edge_ai.py
 The script publishes events to:
 
 ```text
-safety-events
+safety/events
 ```
 
 Each published event is also printed to the console.
 
-### Verify Pub/Sub
+### Verify MQTT Publish
 
-In another terminal, subscribe to the Redis channel:
+In another terminal, subscribe to the MQTT topic:
 
 ```bash
-redis-cli SUBSCRIBE safety-events
+mosquitto_sub -h localhost -p 1883 -t safety/events
 ```
 
-If `redis-cli` is not installed locally, use the Redis Docker container:
+If `mosquitto_sub` is not installed locally, use the Mosquitto Docker container:
 
 ```bash
-docker exec -it strange-redis redis-cli SUBSCRIBE safety-events
+docker exec -it strange-mosquitto mosquitto_sub -h localhost -p 1883 -t safety/events
 ```
 
 Expected event shape:
@@ -145,7 +146,8 @@ Expected event shape:
   "camera_id": "cam_01",
   "timestamp": "2026-05-26T10:00:00Z",
   "severity": "HIGH",
-  "message": "Fall detected from mock edge AI"
+  "message": "Fall detected from mock edge AI",
+  "source": "edge-ai-mock"
 }
 ```
 
@@ -153,4 +155,4 @@ Expected event shape:
 
 - This mock does not implement YOLO, OpenCV, or RTSP processing.
 - It does not include real videos, personal data, API keys, or passwords.
-- It can be replaced later by the real edge AI inference pipeline while keeping the Redis channel contract.
+- It can be replaced later by the real edge AI inference pipeline while keeping the MQTT topic contract.
