@@ -5,17 +5,81 @@ import sys
 import time
 from pathlib import Path
 
-import cv2
-import pandas as pd
-import torch
-import yaml
-from tqdm import tqdm
-from ultralytics import YOLO
+try:
+    import yaml
+except ImportError as exc:
+    yaml = None
+    YAML_IMPORT_ERROR = exc
+else:
+    YAML_IMPORT_ERROR = None
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable=None, total=None, desc=None, unit=None):
+        class _NoopProgress:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def update(self, _count):
+                return None
+
+        return _NoopProgress()
+
+try:
+    import torch
+except ImportError as exc:
+    torch = None
+    TORCH_IMPORT_ERROR = exc
+else:
+    TORCH_IMPORT_ERROR = None
+
+try:
+    import cv2
+except ImportError as exc:
+    cv2 = None
+    CV2_IMPORT_ERROR = exc
+else:
+    CV2_IMPORT_ERROR = None
+
+try:
+    import pandas as pd
+except ImportError as exc:
+    pd = None
+    PANDAS_IMPORT_ERROR = exc
+else:
+    PANDAS_IMPORT_ERROR = None
+
+try:
+    from ultralytics import YOLO
+except ImportError as exc:
+    YOLO = None
+    ULTRALYTICS_IMPORT_ERROR = exc
+else:
+    ULTRALYTICS_IMPORT_ERROR = None
 
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "model_benchmark.yaml"
 DEFAULT_RESULTS_DIR = Path(__file__).resolve().parent / "results"
+BUILTIN_CONFIG = {
+    "warmup_frames": 5,
+    "keypoint_conf_threshold": 0.3,
+    "video_extensions": [".mp4", ".avi", ".mov", ".mkv", ".webm"],
+    "models": [
+        {"name": "YOLOv8n-pose", "candidates": ["yolo8n-pose.pt", "yolov8n-pose.pt"]},
+        {"name": "YOLOv11n-pose", "candidates": ["yolo11n-pose.pt"]},
+        {"name": "YOLO26n-pose", "candidates": ["yolo26n-pose.pt"]},
+        {"name": "YOLOv8s-pose", "candidates": ["yolo8s-pose.pt", "yolov8s-pose.pt"]},
+        {"name": "YOLOv11s-pose", "candidates": ["yolo11s-pose.pt"]},
+        {"name": "YOLO26s-pose", "candidates": ["yolo26s-pose.pt"]},
+    ],
+}
 
+
+COCO_NOSE = 0
 COCO_LEFT_SHOULDER = 5
 COCO_RIGHT_SHOULDER = 6
 COCO_LEFT_HIP = 11
@@ -34,23 +98,35 @@ def parse_args():
 
 
 def load_config(path):
-    with Path(path).open("r", encoding="utf-8") as fp:
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    if yaml is None:
+        print(f"PyYAML import failed, using built-in default config: {YAML_IMPORT_ERROR}")
+        return BUILTIN_CONFIG
+    with config_path.open("r", encoding="utf-8") as fp:
         return yaml.safe_load(fp) or {}
 
 
 def resolve_device(requested):
+    if torch is None:
+        if requested != "auto" and str(requested).lower() != "cpu":
+            print(f"torch import failed, so CUDA device {requested} cannot be used: {TORCH_IMPORT_ERROR}")
+        return "cpu"
+
+    cuda_available = torch.cuda.is_available()
     if requested == "auto":
-        return "0" if torch.cuda.is_available() else "cpu"
+        return "0" if cuda_available else "cpu"
     if str(requested).lower() == "cpu":
         return "cpu"
-    if torch.cuda.is_available():
+    if cuda_available:
         return str(requested)
     print("CUDA is not available. Falling back to CPU and recording device=cpu.")
     return "cpu"
 
 
 def is_cuda_device(device):
-    return str(device).lower() != "cpu" and torch.cuda.is_available()
+    return torch is not None and str(device).lower() != "cpu" and torch.cuda.is_available()
 
 
 def list_videos(video_dir, extensions):
@@ -61,48 +137,25 @@ def list_videos(video_dir, extensions):
     return sorted(path for path in root.iterdir() if path.is_file() and path.suffix.lower() in normalized)
 
 
-def model_display_name(model_entry):
+def candidate_status_name(model_entry):
     return model_entry.get("name") or ", ".join(model_entry.get("candidates", [])) or "unknown"
 
 
 def load_first_available_model(model_entry):
+    if YOLO is None:
+        raise RuntimeError(f"ultralytics import failed: {ULTRALYTICS_IMPORT_ERROR}")
+    if torch is None:
+        raise RuntimeError(f"torch import failed: {TORCH_IMPORT_ERROR}")
+
     errors = []
     for candidate in model_entry.get("candidates", []):
         try:
             return candidate, YOLO(candidate)
         except Exception as exc:
             errors.append(f"{candidate}: {exc}")
-    detail = " | ".join(errors) if errors else "no candidates configured"
-    raise RuntimeError(f"No loadable model candidate for {model_display_name(model_entry)}. Tried: {detail}")
 
-
-def mean_or_zero(values):
-    return float(statistics.fmean(values)) if values else 0.0
-
-
-def percentile(values, pct):
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    index = int(round((pct / 100.0) * (len(ordered) - 1)))
-    return float(ordered[index])
-
-
-def is_fall_candidate(kp_xy, kp_conf, threshold):
-    required = [COCO_LEFT_SHOULDER, COCO_RIGHT_SHOULDER, COCO_LEFT_HIP, COCO_RIGHT_HIP]
-    if any(idx >= kp_conf.numel() or float(kp_conf[idx]) < threshold for idx in required):
-        return False
-
-    left_shoulder = kp_xy[COCO_LEFT_SHOULDER]
-    right_shoulder = kp_xy[COCO_RIGHT_SHOULDER]
-    left_hip = kp_xy[COCO_LEFT_HIP]
-    right_hip = kp_xy[COCO_RIGHT_HIP]
-    shoulder_center = (left_shoulder + right_shoulder) / 2
-    hip_center = (left_hip + right_hip) / 2
-
-    torso_dx = abs(float(shoulder_center[0] - hip_center[0]))
-    torso_dy = abs(float(shoulder_center[1] - hip_center[1]))
-    return torso_dx > 0 and torso_dx / max(torso_dy, 1.0) >= 1.3
+    joined = " | ".join(errors) if errors else "no candidates configured"
+    raise RuntimeError(f"No loadable model candidate for {candidate_status_name(model_entry)}. Tried: {joined}")
 
 
 def extract_pose_metrics(result, keypoint_conf_threshold):
@@ -118,7 +171,13 @@ def extract_pose_metrics(result, keypoint_conf_threshold):
 
     keypoints = getattr(result, "keypoints", None)
     if keypoints is None or keypoints.conf is None:
-        return person_confidences, keypoint_confidences, missing_keypoints, total_keypoints, fall_candidates
+        return {
+            "person_confidences": person_confidences,
+            "keypoint_confidences": keypoint_confidences,
+            "missing_keypoints": missing_keypoints,
+            "total_keypoints": total_keypoints,
+            "fall_candidates": fall_candidates,
+        }
 
     conf_tensor = keypoints.conf.detach().float().cpu()
     xy_tensor = keypoints.xy.detach().float().cpu() if keypoints.xy is not None else None
@@ -130,34 +189,80 @@ def extract_pose_metrics(result, keypoint_conf_threshold):
         visible = kp_conf[kp_conf >= keypoint_conf_threshold]
         if visible.numel() > 0:
             keypoint_confidences.extend(visible.tolist())
+
         if xy_tensor is not None and is_fall_candidate(xy_tensor[person_idx], kp_conf, keypoint_conf_threshold):
             fall_candidates += 1
 
-    return person_confidences, keypoint_confidences, missing_keypoints, total_keypoints, fall_candidates
+    return {
+        "person_confidences": person_confidences,
+        "keypoint_confidences": keypoint_confidences,
+        "missing_keypoints": missing_keypoints,
+        "total_keypoints": total_keypoints,
+        "fall_candidates": fall_candidates,
+    }
+
+
+def is_fall_candidate(keypoints_xy, keypoints_conf, threshold):
+    required = [COCO_LEFT_SHOULDER, COCO_RIGHT_SHOULDER, COCO_LEFT_HIP, COCO_RIGHT_HIP]
+    if any(idx >= keypoints_conf.numel() or float(keypoints_conf[idx]) < threshold for idx in required):
+        return False
+
+    left_shoulder = keypoints_xy[COCO_LEFT_SHOULDER]
+    right_shoulder = keypoints_xy[COCO_RIGHT_SHOULDER]
+    left_hip = keypoints_xy[COCO_LEFT_HIP]
+    right_hip = keypoints_xy[COCO_RIGHT_HIP]
+
+    shoulder_center = (left_shoulder + right_shoulder) / 2
+    hip_center = (left_hip + right_hip) / 2
+    torso_dx = abs(float(shoulder_center[0] - hip_center[0]))
+    torso_dy = abs(float(shoulder_center[1] - hip_center[1]))
+
+    if torso_dx <= 0:
+        return False
+    return torso_dx / max(torso_dy, 1.0) >= 1.3
+
+
+def mean_or_zero(values):
+    return float(statistics.fmean(values)) if values else 0.0
+
+
+def percentile(values, percentile_value):
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    index = int(round((percentile_value / 100.0) * (len(sorted_values) - 1)))
+    return float(sorted_values[index])
 
 
 def run_warmup(model, video_path, warmup_frames, imgsz, device):
+    if cv2 is None:
+        raise RuntimeError(f"opencv-python import failed: {CV2_IMPORT_ERROR}")
     if warmup_frames <= 0:
         return
+
     cap = cv2.VideoCapture(str(video_path))
     try:
-        for _ in range(warmup_frames):
+        count = 0
+        while count < warmup_frames:
             ok, frame = cap.read()
             if not ok:
                 break
             model.predict(frame, imgsz=imgsz, device=device, verbose=False)
+            count += 1
     finally:
         cap.release()
 
 
 def benchmark_video(model, model_name, video_path, imgsz, device, config, max_frames):
+    if cv2 is None:
+        raise RuntimeError(f"opencv-python import failed: {CV2_IMPORT_ERROR}")
+
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {video_path}")
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    threshold = float(config.get("keypoint_conf_threshold", 0.3))
-    cuda = is_cuda_device(device)
+    keypoint_threshold = float(config.get("keypoint_conf_threshold", 0.3))
     latencies = []
     person_confidences = []
     keypoint_confidences = []
@@ -165,6 +270,7 @@ def benchmark_video(model, model_name, video_path, imgsz, device, config, max_fr
     total_keypoints = 0
     fall_candidate_count = 0
     processed_frames = 0
+    cuda = is_cuda_device(device)
 
     if cuda:
         torch.cuda.reset_peak_memory_stats()
@@ -190,15 +296,16 @@ def benchmark_video(model, model_name, video_path, imgsz, device, config, max_fr
                 results = model.predict(frame, imgsz=imgsz, device=device, verbose=False)
                 if cuda:
                     torch.cuda.synchronize()
-                latencies.append((time.perf_counter() - frame_started) * 1000.0)
+                latency_ms = (time.perf_counter() - frame_started) * 1000.0
+                latencies.append(latency_ms)
 
                 for result in results:
-                    person_conf, keypoint_conf, missing, total, falls = extract_pose_metrics(result, threshold)
-                    person_confidences.extend(person_conf)
-                    keypoint_confidences.extend(keypoint_conf)
-                    missing_keypoints += missing
-                    total_keypoints += total
-                    fall_candidate_count += falls
+                    metrics = extract_pose_metrics(result, keypoint_threshold)
+                    person_confidences.extend(metrics["person_confidences"])
+                    keypoint_confidences.extend(metrics["keypoint_confidences"])
+                    missing_keypoints += metrics["missing_keypoints"]
+                    total_keypoints += metrics["total_keypoints"]
+                    fall_candidate_count += metrics["fall_candidates"]
 
                 processed_frames += 1
                 progress.update(1)
@@ -248,6 +355,22 @@ def failure_row(model_name, video_name, device, imgsz, status):
     }
 
 
+def round_numeric_columns(df):
+    numeric_columns = [
+        "avg_fps",
+        "avg_latency_ms",
+        "p95_latency_ms",
+        "gpu_memory_mb",
+        "avg_person_confidence",
+        "avg_keypoint_confidence",
+        "keypoint_missing_rate",
+    ]
+    for column in numeric_columns:
+        if column in df:
+            df[column] = df[column].astype(float).round(4)
+    return df
+
+
 def round_rows(rows):
     numeric_columns = [
         "avg_fps",
@@ -289,10 +412,7 @@ def build_model_summary(df):
         keypoint_missing_rate=("keypoint_missing_rate", "mean"),
         fall_candidate_count=("fall_candidate_count", "sum"),
     )
-
-    for column in grouped.columns:
-        if column != "model_name":
-            grouped[column] = grouped[column].astype(float).round(4)
+    grouped = round_numeric_columns(grouped)
 
     fastest = grouped.sort_values("avg_fps", ascending=False).iloc[0]["model_name"]
     lowest_latency = grouped.sort_values("avg_latency_ms", ascending=True).iloc[0]["model_name"]
@@ -344,10 +464,16 @@ def save_results(rows, results_dir):
         writer.writeheader()
         writer.writerows(rows)
 
-    df = pd.DataFrame(rows, columns=fieldnames)
     md_content = "# YOLO Pose Model Benchmark\n\n"
-    md_content += rows_to_markdown(df.to_dict(orient="records"), fieldnames)
-    md_content += build_model_summary(df)
+    if pd is None:
+        print(f"pandas import failed, using built-in Markdown writer: {PANDAS_IMPORT_ERROR}")
+        md_content += rows_to_markdown(rows, fieldnames)
+        md_content += "\n\n## Model Summary\n\nInstall pandas and rerun to generate grouped model summary statistics.\n"
+    else:
+        df = pd.DataFrame(rows, columns=fieldnames)
+        df = round_numeric_columns(df)
+        md_content += rows_to_markdown(df.to_dict(orient="records"), fieldnames)
+        md_content += build_model_summary(df)
     md_path.write_text(md_content, encoding="utf-8")
     return csv_path, md_path
 
@@ -362,7 +488,7 @@ def main():
         print(f"No videos found in {args.video_dir}. Add videos to this folder and run the benchmark again.")
         rows = [
             failure_row(
-                model_display_name(model_entry),
+                candidate_status_name(model_entry),
                 "(no video)",
                 device,
                 args.imgsz,
@@ -377,7 +503,7 @@ def main():
 
     rows = []
     for model_entry in config.get("models", []):
-        configured_name = model_display_name(model_entry)
+        configured_name = candidate_status_name(model_entry)
         try:
             loaded_name, model = load_first_available_model(model_entry)
         except Exception as exc:
